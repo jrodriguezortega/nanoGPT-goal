@@ -5,6 +5,9 @@ import torch.nn as NN
 import torch.nn.functional as F
 from collections import OrderedDict
 
+# Directories path
+models_path = './models/'
+
 # Hyperparameters
 block_size = 64  # The number of characters our Transformers is able to take at once
 batch_size = 64
@@ -263,6 +266,9 @@ print('LM model:')
 idx = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(model2.generate(idx=idx, max_new_tokens=300)[0].tolist()))
 print('----------------------')
+
+# Save model2 in case we want to use it later
+torch.save(model2.state_dict(), f'{models_path}/tf_model.pt')
 
 plt.plot(eval_it_lm, train_losses_lm, label='train loss LM')
 plt.plot(eval_it_lm, val_losses_lm, label='val loss LM')
