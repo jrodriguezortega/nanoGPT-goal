@@ -1,24 +1,23 @@
 # Imports
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as NN
-import torch.nn.functional as F
-from collections import OrderedDict
+
+from nanoGPT.models import BigramLM, LanguageModel
 
 # Directories path
-models_path = './models/'
+models_path = './checkpoints/'
 
 # Hyperparameters
 block_size = 64  # The number of characters our Transformers is able to take at once
 batch_size = 64
 steps = 5000
-lr = 3e-4
+lr = 4e-3
 eval_iters = 200
-n_embd = 32
-n_heads = 4
-n_blocks = 3
-head_size = n_embd // n_heads
-dropout = 0.0
+d_model = 120
+n_heads = 5
+n_blocks = 5
+head_size = d_model // n_heads
+dropout = 0.2
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print(f'Using {device}')
@@ -61,159 +60,7 @@ def get_batch(split='train'):
     return x, y
 
 
-# Bigram Language Model (LM) definition
-class BigramLM(NN.Module):
-    def __init__(self):
-        super(BigramLM, self).__init__()
-        # Create lookup table representing the bigram LM
-        self.lookup_table = torch.nn.Embedding(vocab_size, vocab_size)
-
-    def forward(self, x, y=None):
-        # x (B, T), y (B, T)
-        logits = self.lookup_table(x)  # (B, T, V)
-        if y is None:
-            loss = None
-        else:
-            B, T, V = logits.shape
-            logits = logits.view(B * T, V)
-            targets = y.view(B * T)
-            loss = F.cross_entropy(logits, targets)
-
-        return logits, loss
-
-    def generate(self, idx, max_new_tokens):
-        # idx is (B, T) array of indices in the current context
-        for _ in range(max_new_tokens):
-            # get the predictions
-            logits, loss = self(idx[:, -block_size:])
-            # focus only on the last time step
-            logits = logits[:, -1, :]  # becomes (B, C)
-            # apply softmax to get probabilities
-            probs = F.softmax(logits, dim=-1)  # (B, C)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)  # (B, 1)
-            # append sampled index to the running sequence
-            idx = torch.cat((idx, idx_next), dim=1)  # (B, T+1)
-        return idx
-
-
-class Head(NN.Module):
-    def __init__(self, d_model, head_size):
-        super(Head, self).__init__()
-        self.head_size = head_size
-        self.query = NN.Linear(d_model, head_size, bias=False)  # d_model, head_size
-        self.key = NN.Linear(d_model, head_size, bias=False)  # d_model, head_size
-        self.value = NN.Linear(d_model, head_size, bias=False)  # d_model, head_size
-
-        self.dropout = NN.Dropout(dropout)
-        # self.qkv = NN.Linear(bias=False)  # d_model, head_size*3
-
-        # X @ QKV = B, block_size, head_size*3
-
-    def forward(self, x, masked=True):
-        # X = B, block_size, d_model
-        q = self.query(x)  # B, block_size, head_size
-        k = self.key(x)  # B, block_size, head_size
-        v = self.value(x)  # B, block_size, head_size
-
-        wei = q @ k.transpose(-2, -1) * (self.head_size ** -0.5)  # B, block_size, block_size
-
-        if masked:
-            wei = wei.masked_fill(wei.tril() == 0, float('-inf'))
-
-        wei = wei.softmax(-1)
-        wei = self.dropout(wei)
-
-        out = wei @ v  # B, block_size, head_size
-
-        return out
-
-
-class MultiHeadAttention(NN.Module):
-    """ Class implementing multi-head attention
-     Simply apply n_heads in parallel using ModuleList
-    """
-
-    def __init__(self, n_heads, head_size, d_model):
-        super(MultiHeadAttention, self).__init__()
-        self.heads = NN.ModuleList([Head(d_model, head_size) for _ in range(n_heads)])
-        self.proj = NN.Linear(n_embd, n_embd)
-        self.dropout = NN.Dropout(dropout)
-
-    def forward(self, x):
-        x = torch.cat([head(x) for head in self.heads], dim=-1)
-        x = self.proj(x)
-        x = self.dropout(x)
-
-        return x
-
-
-class FFN(NN.Module):
-    """ This FFN is applied to each position independently to add more computation/expressiveness to the model"""
-
-    def __init__(self, d_model, d_inner):
-        super(FFN, self).__init__()
-        self.inner = NN.Linear(d_model, d_inner)
-        self.out = NN.Linear(d_inner, d_model)
-        self.dropout = NN.Dropout(dropout)
-
-    def forward(self, x):
-        x = torch.relu(self.inner(x))
-        x = self.out(x)
-        x = self.dropout(x)
-
-        return x
-
-
-class Block(NN.Module):
-    def __init__(self, n_head, head_size, d_model):
-        super(Block, self).__init__()
-        self.ln1 = NN.LayerNorm(d_model)
-        self.self_heads = MultiHeadAttention(n_head, head_size, d_model)
-        self.ln2 = NN.LayerNorm(d_model)
-        self.ffn = FFN(d_model, d_model)
-
-    def forward(self, x):
-        x = self.ln1(x)
-        x = self.self_heads(x)
-        x = self.ln2(x)
-        x = self.ffn(x)
-
-        return x
-
-
-class LanguageModel(BigramLM):
-    def __init__(self, n_blocks):
-        super(LanguageModel, self).__init__()
-        self.token_emb_table = NN.Embedding(vocab_size, n_embd)
-        self.pos_end = NN.Embedding(block_size, n_embd)
-        self.blocks = NN.Sequential(OrderedDict([
-            (f'Block {i}', Block(n_heads, head_size, n_embd)) for i in range(n_blocks)
-        ]))
-        self.ln = NN.LayerNorm(n_embd)
-        self.linear = NN.Linear(n_embd, vocab_size)
-
-    def forward(self, idx, targets=None):
-        B, T = idx.shape
-        tok_emb = self.token_emb_table(idx)  # B, T, C
-        pos_emb = self.pos_end(torch.arange(T, device=device))  # T, C
-        x = tok_emb + pos_emb  # B, T, C
-        x = self.blocks(x)  # B, T, C
-        x = self.ln(x)  # B, T, C
-        logits = self.linear(x)  # B, T, vocab_size
-
-        if targets is None:
-            loss = None
-        else:
-            B, T, C = logits.shape
-            logits = logits.view(B * T, C)
-            targets = targets.view(B * T)
-            loss = F.cross_entropy(logits, targets)
-
-        return logits, loss
-
-
-def train(model, optimizer):
+def train(model, optimizer, scheduler=None):
     model.to(device)
 
     # Define training and validation loop for the BigramLM model
@@ -253,10 +100,19 @@ def train(model, optimizer):
 
 
 # Create model and optimizer
-model = BigramLM()
+model = BigramLM(vocab_size=vocab_size, block_size=block_size)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-model2 = LanguageModel(n_blocks=n_blocks)
+model2 = LanguageModel(
+    n_blocks=n_blocks,
+    block_size=block_size,
+    n_heads=n_heads,
+    head_size=head_size,
+    d_model=d_model,
+    vocab_size=vocab_size,
+    device=device
+)
+
 optimizer2 = torch.optim.Adam(model2.parameters(), lr=lr)
 
 # eval_it_bigram, train_losses_bigram, val_losses_bigram = train(model, optimizer)
