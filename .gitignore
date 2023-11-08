@@ -6,8 +6,6 @@ __pycache__/
 # Data directories
 data/
 
-notebooks/
-
 
 # C extensions
 *.so
