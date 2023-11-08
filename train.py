@@ -8,7 +8,7 @@ from nanoGPT.models import BigramLM, LanguageModel
 models_path = './checkpoints/'
 
 # Hyperparameters
-block_size = 64  # The number of characters our Transformers is able to take at once
+block_size = 128  # The number of characters our Transformers is able to take at once
 batch_size = 64
 steps = 5000
 lr = 4e-3
@@ -19,9 +19,14 @@ n_blocks = 5
 head_size = d_model // n_heads
 dropout = 0.2
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f'Using {device}')
+if torch.cuda.is_available():
+    device = "cuda:0"
+elif torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
 
+print(f'Using {device}')
 
 # For reproducibility purposes
 torch.manual_seed(123445)
@@ -90,6 +95,10 @@ def train(model, optimizer, scheduler=None):
         model.eval()
         _, val_loss = model(val_x, val_y)
 
+        # Reduce learning rate after some epochs
+        if scheduler is not None:
+            scheduler.step()
+
         if i % eval_iters == 0:
             eval_it.append(i)
             train_losses.append(train_loss.item())
@@ -113,10 +122,17 @@ model2 = LanguageModel(
     device=device
 )
 
+# Print model number of parameters of language model
+print(f'Number of parameters: {sum(p.numel() for p in model2.parameters())}')
+
+# Optimizer for the language model
 optimizer2 = torch.optim.Adam(model2.parameters(), lr=lr)
 
+# StepLR scheduler
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer2, step_size=1000, gamma=0.5)
+
 # eval_it_bigram, train_losses_bigram, val_losses_bigram = train(model, optimizer)
-eval_it_lm, train_losses_lm, val_losses_lm = train(model2, optimizer2)
+eval_it_lm, train_losses_lm, val_losses_lm = train(model2, optimizer2, scheduler=scheduler)
 
 print('LM model:')
 idx = torch.zeros((1, 1), dtype=torch.long, device=device)
@@ -130,3 +146,6 @@ plt.plot(eval_it_lm, train_losses_lm, label='train loss LM')
 plt.plot(eval_it_lm, val_losses_lm, label='val loss LM')
 plt.legend()
 plt.show()
+
+
+# Un buen ejercicio sería aumentar el tamaño del modelo, ver si se atasca y debuggear el modelo
